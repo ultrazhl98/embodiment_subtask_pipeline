@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "subtask-pipeline"
+version = "0.1.0"
+description = "L1->L2 subtask 标注数据生产产线 (LaRA-VLA + CycleVLA, 参考 ECoT)"
+requires-python = ">=3.9"
+dependencies = ["numpy>=1.23", "PyYAML>=6.0"]
+
+[project.optional-dependencies]
+images = ["opencv-python>=4.7", "Pillow>=9.0"]
+lerobot = ["pandas>=1.5", "pyarrow>=10.0"]
+openai = ["openai>=1.0"]
+grounding = ["torch>=2.0", "transformers>=4.40"]
+
+[project.scripts]
+subtask-pipeline = "subtask_pipeline.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["subtask_pipeline*"]

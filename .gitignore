@@ -1,0 +1,24 @@
+# 参考仓 (embodied-CoT) 仅用于设计参照，代码未在运行时引用，不纳入本仓
+embodied-CoT/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.eggs/
+.pytest_cache/
+.ipynb_checkpoints/
+
+# 产线输出 / 临时文件
+*.jsonl
+!doc/**/*.jsonl
+out/
+outputs/
+*.log
+
+# 系统
+.DS_Store
+.venv/
+venv/

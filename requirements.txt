@@ -1,0 +1,18 @@
+# 核心依赖 (主链路 + 合成数据)
+numpy>=1.23
+PyYAML>=6.0
+
+# 图像质量 / LeRobot 视频解码 (推荐)
+opencv-python>=4.7
+Pillow>=9.0
+
+# LeRobot v2/v2.1 parquet 读取
+pandas>=1.5
+pyarrow>=10.0
+
+# 实 LLM/VLM 后端 (按需安装)
+# openai>=1.0
+
+# Stage 4 grounding (按需安装，重依赖)
+# torch>=2.0
+# transformers>=4.40

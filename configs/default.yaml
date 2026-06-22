@@ -1,0 +1,58 @@
+# Subtask 标注产线默认配置
+# 关键参数取自 doc/pipeline_overview.md，按数据集特性调整。
+
+stage0:
+  jitter_window: 10
+  jitter_max_switches: 2
+  min_hold_frames: 5
+  gripper_reliable_threshold: 0.7
+  length_mad_factor: 3.0
+  brightness_threshold: 30.0
+  blur_threshold: 100.0
+  frozen_diff_threshold: 1.0
+  image_sample_count: 5
+  gripper_binarize_threshold: 0.5
+
+stage1b:
+  binarize_threshold: 0.5
+  median_filter_window: 7
+  min_segment_frames: 10
+  primitive_move_threshold: 0.03
+  fast_speed_quantile: 0.6
+
+stage2:
+  delta_tolerance: 1          # LIBERO 建议 1, DROID 建议 2
+  fallback_sample_factor: 3
+  fallback_low_conf_threshold: 0.4
+  fallback_mean_conf_threshold: 0.5
+  negotiate_max_primitive_tokens: 20
+
+stage3:
+  keyframes_per_segment: 4
+  max_desc_words: 15
+  max_desc_retries: 2
+  dedup_word_overlap: 0.6
+  self_check_max_retries: 2
+
+stage4:
+  enable_grounding: false
+  box_confidence_threshold: 0.3
+  use_sam_refine: true
+
+llm:
+  backend: mock               # mock | openai | gemini
+  llm_model: gpt-4o-mini
+  vlm_model: qwen2.5-vl-7b-instruct
+  api_key: null
+  base_url: null
+  temperature: 0.0
+  max_tokens: 1024
+  max_retries: 2
+
+loss_weights:
+  Gold: 1.0
+  Silver: 0.5
+  Bronze: 0.2
+
+enable_anchor_extraction: true
+enable_text_decomposition: true
