@@ -22,3 +22,6 @@ outputs/
 .DS_Store
 .venv/
 venv/
+
+# 本地编码规范, 不纳入仓库
+CLAUDE.md

@@ -78,11 +78,14 @@ class Stage4Config:
 class LLMConfig:
     """VLM / LLM 客户端配置。"""
 
-    backend: str = "mock"              # "mock" | "openai" | "gemini"
+    backend: str = "mock"              # "mock" | "vllm" | "openai" | "gemini"
     llm_model: str = "gpt-4o-mini"
     vlm_model: str = "qwen2.5-vl-7b-instruct"
     api_key: Optional[str] = None
-    base_url: Optional[str] = None     # OpenAI 兼容端点
+    base_url: Optional[str] = None     # OpenAI 兼容端点 (显式指定时优先)
+    host: Optional[str] = None         # vLLM 服务 IP (backend=vllm 时只需配这个)
+    port: int = 8000                   # vLLM 服务端口
+    model: Optional[str] = None        # vLLM served model 名; None 则自动发现
     temperature: float = 0.0
     max_tokens: int = 1024
     max_retries: int = 2               # JSON 解析/校验失败重试次数

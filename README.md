@@ -15,15 +15,25 @@ pip install -e ".[images,lerobot]"          # 或: pip install -r requirements.t
 python -m subtask_pipeline.cli run --synthetic --n 5 --out out.jsonl --report report.json
 ```
 
-真实数据 + 真实 VLM (OpenAI 兼容端点，如本地 vLLM 部署的 Qwen2.5-VL)：
+真实数据 + vLLM 部署的 Qwen-VL（**只需配服务 IP**）：
 
 ```bash
-export OPENAI_API_KEY=...
+# (可选) 部署后先验证连通性, 会自动发现 served model 名
+python -m subtask_pipeline.cli ping --vllm-host 10.0.0.5 --vllm-port 8000
+
+# 跑产线: --vllm-host 一设即自动切到 vllm 后端
 python -m subtask_pipeline.cli run \
     --lerobot /path/to/lerobot_dataset \
-    --config configs/default.yaml --backend openai \
+    --vllm-host 10.0.0.5 --vllm-port 8000 \
+    --camera primary --gripper-key action --gripper-dim 6 --eef-xyz-dims 20,21,22 \
     --out out.jsonl --report report.json
 ```
+
+vLLM 客户端 (`llm/vllm_client.py`) 只用标准库 urllib (零额外依赖)，走 OpenAI 兼容
+`/v1/chat/completions`，图文多模态自动编码为 base64；`model` 不填时调 `/v1/models`
+自动发现。也可在 `configs/default.yaml` 里设 `llm.backend: vllm` + `llm.host`。
+
+> austin_buds 真机数据已适配: 末端 xyz=`state[20:23]`、gripper=`action[6]`。
 
 主链路 bootstrap（先验证端到端，跳过锚点/文本分解，走纯物理分割 → 全 Gold）：
 

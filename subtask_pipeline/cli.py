@@ -38,11 +38,26 @@ def _load_episodes(args) -> List[Episode]:
     raise SystemExit("需指定 --synthetic 或 --lerobot <root>")
 
 
+def _apply_llm_overrides(cfg, args):
+    """把 CLI 上的 LLM/vLLM 覆盖项写入配置。"""
+    if args.backend:
+        cfg.llm.backend = args.backend
+    if getattr(args, "vllm_host", None):
+        cfg.llm.backend = "vllm"
+        cfg.llm.host = args.vllm_host
+    if getattr(args, "vllm_port", None):
+        cfg.llm.port = args.vllm_port
+    if getattr(args, "vllm_model", None):
+        cfg.llm.model = args.vllm_model
+    if getattr(args, "base_url", None):
+        cfg.llm.backend = cfg.llm.backend if cfg.llm.backend != "mock" else "vllm"
+        cfg.llm.base_url = args.base_url
+
+
 def cmd_run(args):
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
     cfg = PipelineConfig.from_yaml(args.config) if args.config else PipelineConfig()
-    if args.backend:
-        cfg.llm.backend = args.backend
+    _apply_llm_overrides(cfg, args)
     if args.no_anchor:
         cfg.enable_anchor_extraction = False
         cfg.enable_text_decomposition = False
@@ -67,6 +82,13 @@ def cmd_run(args):
         print(f"\n{len(out['failures'])} failures", file=sys.stderr)
 
 
+def cmd_ping(args):
+    from .llm.vllm_client import VLLMClient
+    client = VLLMClient(host=args.vllm_host, port=args.vllm_port, model=args.vllm_model,
+                        net_retries=1, net_backoff=0.5, timeout=10.0)
+    print(json.dumps(client.ping(), ensure_ascii=False, indent=2))
+
+
 def main(argv=None):
     p = argparse.ArgumentParser(prog="subtask_pipeline", description="Subtask 标注产线")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -83,12 +105,24 @@ def main(argv=None):
     src.add_argument("--no-images", action="store_true", help="合成数据不生成图像")
 
     r.add_argument("--config", help="YAML 配置文件")
-    r.add_argument("--backend", choices=["mock", "openai", "gemini"], help="覆盖 LLM 后端")
+    r.add_argument("--backend", choices=["mock", "vllm", "openai", "gemini"], help="覆盖 LLM 后端")
+    llm = r.add_argument_group("vLLM 后端 (只需配 --vllm-host 即可启用)")
+    llm.add_argument("--vllm-host", default=None, help="vLLM 服务 IP, 设置即自动切到 vllm 后端")
+    llm.add_argument("--vllm-port", type=int, default=None, help="vLLM 端口 (默认 8000)")
+    llm.add_argument("--vllm-model", default=None, help="served model 名 (默认自动发现)")
+    llm.add_argument("--base-url", default=None, help="直接指定 OpenAI 兼容 base_url (覆盖 host/port)")
     r.add_argument("--no-anchor", action="store_true", help="主链路 bootstrap: 跳过锚点/文本分解")
     r.add_argument("--grounding", action="store_true", help="开启 Stage 4 grounding")
     r.add_argument("--out", help="输出 jsonl 路径")
     r.add_argument("--report", help="统计报告 json 路径")
     r.set_defaults(func=cmd_run)
+
+    # ping 子命令: 部署后快速验证连通性
+    pg = sub.add_parser("ping", help="检查 vLLM 服务连通性")
+    pg.add_argument("--vllm-host", required=True, help="vLLM 服务 IP")
+    pg.add_argument("--vllm-port", type=int, default=8000, help="vLLM 端口 (默认 8000)")
+    pg.add_argument("--vllm-model", default=None, help="served model 名 (默认自动发现)")
+    pg.set_defaults(func=cmd_ping)
 
     args = p.parse_args(argv)
     args.func(args)

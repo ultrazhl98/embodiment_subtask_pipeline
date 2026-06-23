@@ -40,11 +40,16 @@ stage4:
   use_sam_refine: true
 
 llm:
-  backend: mock               # mock | openai | gemini
+  backend: mock               # mock | vllm | openai | gemini
+  # --- vLLM 后端 (部署 Qwen-VL 等): 只需填 host, 其余可自动探测 ---
+  host: null                  # vLLM 服务 IP, 如 10.0.0.5
+  port: 8000                  # vLLM 端口
+  model: null                 # served model 名; null -> 调 /v1/models 自动发现
+  # --- OpenAI 兼容后端 ---
   llm_model: gpt-4o-mini
   vlm_model: qwen2.5-vl-7b-instruct
-  api_key: null
-  base_url: null
+  api_key: null               # vLLM 无需鉴权时留空 (内部用 EMPTY)
+  base_url: null              # 显式 OpenAI 兼容端点 (优先于 host/port)
   temperature: 0.0
   max_tokens: 1024
   max_retries: 2
