@@ -75,6 +75,30 @@ class Stage4Config:
 
 
 @dataclass
+class DatasetConfig:
+    """数据集 profile：把一个数据集的来源 + 加载约定收拢到一处。
+
+    新增一个 LeRobot 数据集只需在 YAML 的 `dataset:` 块里填这些字段，无需改代码。
+    """
+
+    type: str = "synthetic"            # "lerobot" | "synthetic"
+    # --- 通用 ---
+    n: Optional[int] = None            # 处理的轨迹条数 (None=全部)
+    # --- LeRobot ---
+    root: Optional[str] = None         # 数据集根目录
+    state_key: str = "observation.state"
+    eef_xyz_dims: Optional[List[int]] = None  # state 中末端 xyz 的 3 个维度下标
+    gripper_key: Optional[str] = None  # gripper 来源列 (如 'action')；None 则取 state
+    gripper_dim: int = -1              # gripper 在该列向量中的下标
+    gripper_open_is_high: bool = True  # True: 值大=张开；False: 翻转极性
+    gripper_min: Optional[float] = None  # 给定 min/max 则线性归一到 [0,1]
+    gripper_max: Optional[float] = None
+    image_camera: Optional[str] = None  # 相机名 (None=自动探测)
+    # --- synthetic ---
+    with_images: bool = True
+
+
+@dataclass
 class LLMConfig:
     """VLM / LLM 客户端配置。"""
 
@@ -112,6 +136,7 @@ class PipelineConfig:
     stage3: Stage3Config = field(default_factory=Stage3Config)
     stage4: Stage4Config = field(default_factory=Stage4Config)
     llm: LLMConfig = field(default_factory=LLMConfig)
+    dataset: Optional[DatasetConfig] = None  # 数据集 profile (CLI 快捷方式也会填充它)
 
     loss_weights: Dict[str, float] = field(default_factory=lambda: dict(DEFAULT_LOSS_WEIGHTS))
     allowed_verbs: List[str] = field(default_factory=lambda: list(ALLOWED_VERBS))
@@ -127,6 +152,7 @@ class PipelineConfig:
         sub_map = {
             "stage0": Stage0Config, "stage1b": Stage1bConfig, "stage2": Stage2Config,
             "stage3": Stage3Config, "stage4": Stage4Config, "llm": LLMConfig,
+            "dataset": DatasetConfig,
         }
         kwargs: Dict[str, Any] = {}
         for key, sub_cls in sub_map.items():
