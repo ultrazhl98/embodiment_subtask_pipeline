@@ -79,6 +79,65 @@ def test_fallback_path_produces_n_text_segments():
     assert segs[-1].end_frame == ep.num_frames - 1
 
 
+def test_episode_validate():
+    from subtask_pipeline.data.types import Episode
+    # 合成 Episode 满足契约
+    make_synthetic_episode("ok", n_subtasks=2, seed=0).validate()
+    # gripper 超出 [0,1] 约定 -> raise
+    bad = make_synthetic_episode("bad_grip", n_subtasks=2, seed=0)
+    bad.gripper = bad.gripper + 5.0
+    try:
+        bad.validate()
+        assert False, "应因 gripper 越界报错"
+    except ValueError:
+        pass
+    # states 行数与 num_frames 不一致 -> raise
+    bad2 = make_synthetic_episode("bad_shape", n_subtasks=2, seed=0)
+    bad2.num_frames = bad2.num_frames + 7
+    try:
+        bad2.validate()
+        assert False, "应因 shape 不一致报错"
+    except ValueError:
+        pass
+
+
+def test_build_loader_synthetic_runs():
+    from subtask_pipeline.config import DatasetConfig
+    from subtask_pipeline.data import build_loader
+    loader = build_loader(DatasetConfig(type="synthetic", n=3, with_images=False))
+    assert len(loader) == 3
+    out = PipelineRunner(PipelineConfig()).run(list(loader.iter_episodes()))
+    assert len(out["records"]) == 3
+    assert out["failures"] == []
+
+
+def test_gripper_polarity_normalization():
+    from subtask_pipeline.data.lerobot_loader import LeRobotLoader
+    # 不经磁盘构造, 只测归一逻辑
+    loader = object.__new__(LeRobotLoader)
+    raw = np.array([0.0, 0.0, 1.0, 1.0], dtype=np.float32)  # 原始: 1=闭合
+    # 正极性: 原样
+    loader.gripper_open_is_high, loader.gripper_min, loader.gripper_max = True, None, None
+    assert np.allclose(loader._normalize_gripper(raw), raw)
+    # 反极性: 翻转 -> 1=张开
+    loader.gripper_open_is_high = False
+    assert np.allclose(loader._normalize_gripper(raw), 1.0 - raw)
+    # min-max 归一
+    loader.gripper_open_is_high, loader.gripper_min, loader.gripper_max = True, 0.0, 2.0
+    assert np.allclose(loader._normalize_gripper(np.array([0.0, 1.0, 2.0])), [0.0, 0.5, 1.0])
+
+
+def test_invalid_episode_collected_as_failure():
+    from subtask_pipeline.data.types import Episode
+    bad = make_synthetic_episode("e2e_bad", n_subtasks=2, seed=0)
+    bad.gripper = bad.gripper + 5.0
+    good = make_synthetic_episode("e2e_ok", n_subtasks=2, seed=1)
+    out = PipelineRunner(PipelineConfig()).run([bad, good])
+    assert len(out["records"]) == 1
+    assert len(out["failures"]) == 1
+    assert out["failures"][0]["episode_id"] == "e2e_bad"
+
+
 def test_end_to_end_full_and_bootstrap():
     eps = make_synthetic_dataset(n_episodes=5)
     # 完整链路

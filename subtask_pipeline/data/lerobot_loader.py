@@ -83,6 +83,9 @@ class LeRobotLoader:
         eef_xyz_dims: Optional[List[int]] = None,
         image_camera: Optional[str] = None,
         chunk_size: int = 1000,
+        gripper_open_is_high: bool = True,
+        gripper_min: Optional[float] = None,
+        gripper_max: Optional[float] = None,
     ):
         """参数
         ----
@@ -91,6 +94,10 @@ class LeRobotLoader:
                       None 则默认取 state 前 3 维
         gripper_key : gripper 信号来源列 (可为 'action' 等其它列)；None 则取 state 的 gripper_dim
         gripper_dim : gripper 在该列向量中的下标 (如 action[6] 则为 6)
+        gripper_open_is_high : True 表示值大=张开；False 则翻转极性，统一到 Episode 契约
+                      (归一后 1=张开)
+        gripper_min/gripper_max : 给定则把 gripper 线性归一到 [0,1] (按 (g-min)/(max-min))；
+                      否则按原值二值化 (要求原值已在 [0,1] 量纲)
         """
         self.root = root
         self.state_key = state_key
@@ -99,6 +106,9 @@ class LeRobotLoader:
         self.eef_xyz_dims = list(eef_xyz_dims) if eef_xyz_dims is not None else None
         self.image_camera = image_camera
         self.chunk_size = chunk_size
+        self.gripper_open_is_high = gripper_open_is_high
+        self.gripper_min = gripper_min
+        self.gripper_max = gripper_max
 
         meta_dir = os.path.join(root, "meta")
         with open(os.path.join(meta_dir, "info.json")) as f:
@@ -133,6 +143,18 @@ class LeRobotLoader:
             return self.tasks.get(ep_meta["task_index"], "")
         return ep_meta.get("task", "")
 
+    def _normalize_gripper(self, gripper: np.ndarray) -> np.ndarray:
+        """把原始 gripper 信号统一到 Episode 契约: [0,1]，1=张开。"""
+        g = np.asarray(gripper, dtype=np.float32).reshape(-1)
+        if self.gripper_min is not None and self.gripper_max is not None:
+            span = self.gripper_max - self.gripper_min
+            if span != 0:
+                g = (g - self.gripper_min) / span
+            g = np.clip(g, 0.0, 1.0)
+        if not self.gripper_open_is_high:
+            g = 1.0 - g
+        return g
+
     def load_episode(self, i: int) -> Episode:
         import pandas as pd  # 延迟导入
 
@@ -156,6 +178,7 @@ class LeRobotLoader:
             gripper = (col[:, self.gripper_dim] if col.ndim == 2 else col).reshape(-1)
         else:
             gripper = full_state[:, self.gripper_dim].reshape(-1)
+        gripper = self._normalize_gripper(gripper)
 
         image_fn = None
         if self.image_camera:

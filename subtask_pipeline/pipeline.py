@@ -40,6 +40,18 @@ class PipelineRunner:
     # ----------------------------------------------------------------------
     def run(self, episodes: Sequence[Episode]) -> Dict:
         episodes = list(episodes)
+        failures: List[Dict] = []
+
+        # Pass 0: 契约校验，违约者计入 failures 不参与后续
+        valid: List[Episode] = []
+        for ep in episodes:
+            try:
+                ep.validate()
+                valid.append(ep)
+            except Exception as e:  # noqa: BLE001
+                logger.warning("episode %s 不满足输入契约: %s", ep.episode_id, e)
+                failures.append({"episode_id": ep.episode_id, "error": repr(e)})
+        episodes = valid
 
         # Pass 1: Stage 0 逐条 + 数据集级长度异常
         lengths_by_task: Dict[str, List[int]] = {}
@@ -54,7 +66,7 @@ class PipelineRunner:
             ep.meta["length_flag"] = s0.length_flag(ep.num_frames, ep.task_instruction, length_stats)
 
         # Pass 2: Stage 1~5 逐条
-        records, failures = [], []
+        records = []
         for ep in episodes:
             try:
                 records.append(self._run_episode(ep))

@@ -1,0 +1,21 @@
+# 数据集 profile 示例: austin_buds (LeRobot v2.1)
+# 一个文件同时描述「数据来源 + 加载约定 + 该数据集的 stage 调参」。
+# 用法: python -m subtask_pipeline.cli run --config configs/datasets/austin_buds.yaml
+
+dataset:
+  type: lerobot
+  root: /path/to/austin_buds          # 改成实际路径
+  state_key: observation.state
+  eef_xyz_dims: [20, 21, 22]          # 末端 xyz 在 state 中的下标
+  gripper_key: action                 # gripper 取自 action 列
+  gripper_dim: 6                      # action[6]
+  gripper_open_is_high: true          # 值大=张开 (若相反改 false, 会自动翻转极性)
+  # gripper_min / gripper_max:        # 若 gripper 非 [0,1] 量纲, 填上下界自动归一
+  image_camera: null                  # null=自动探测
+
+# 该数据集的 stage 调参覆盖 (其余沿用 config.py 默认)
+stage2:
+  delta_tolerance: 1
+
+llm:
+  backend: mock                       # 接 vLLM 时改为 vllm 并配 host

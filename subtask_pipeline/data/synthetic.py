@@ -97,6 +97,25 @@ def make_synthetic_episode(
     )
 
 
+class SyntheticLoader:
+    """把合成数据集封装成符合 DatasetLoader Protocol 的 loader。"""
+
+    def __init__(self, n_episodes: int = 5, with_images: bool = True):
+        self._episodes = make_synthetic_dataset(n_episodes=n_episodes, with_images=with_images)
+
+    def __len__(self) -> int:
+        return len(self._episodes)
+
+    def load_episode(self, i: int) -> Episode:
+        return self._episodes[i]
+
+    def iter_episodes(self, indices: Optional[List[int]] = None):
+        if indices is None:
+            indices = range(len(self._episodes))
+        for i in indices:
+            yield self._episodes[i]
+
+
 def make_synthetic_dataset(n_episodes: int = 5, with_images: bool = True) -> List[Episode]:
     """生成一个小型合成数据集，混合 reliable / noisy 轨迹与不同段数。"""
     tasks = [

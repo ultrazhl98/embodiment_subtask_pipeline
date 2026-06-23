@@ -17,25 +17,35 @@ import logging
 import sys
 from typing import List
 
-from .config import PipelineConfig
-from .data.synthetic import make_synthetic_dataset
+from .config import DatasetConfig, PipelineConfig
+from .data import build_loader
 from .data.types import Episode
 from .pipeline import PipelineRunner
 
 
-def _load_episodes(args) -> List[Episode]:
+def _resolve_dataset(cfg: PipelineConfig, args) -> DatasetConfig:
+    """决定数据集 spec: CLI 快捷方式 (--synthetic/--lerobot) 优先，否则用 profile。"""
     if args.synthetic:
-        return make_synthetic_dataset(n_episodes=args.n, with_images=not args.no_images)
+        return DatasetConfig(type="synthetic", n=args.n, with_images=not args.no_images)
     if args.lerobot:
-        from .data.lerobot_loader import LeRobotLoader
         eef_dims = [int(x) for x in args.eef_xyz_dims.split(",")] if args.eef_xyz_dims else None
-        loader = LeRobotLoader(
-            args.lerobot, image_camera=args.camera,
-            gripper_key=args.gripper_key, gripper_dim=args.gripper_dim,
-            eef_xyz_dims=eef_dims)
-        indices = range(min(args.n, len(loader))) if args.n else None
-        return list(loader.iter_episodes(indices))
-    raise SystemExit("需指定 --synthetic 或 --lerobot <root>")
+        return DatasetConfig(
+            type="lerobot", root=args.lerobot, n=args.n, image_camera=args.camera,
+            gripper_key=args.gripper_key, gripper_dim=args.gripper_dim, eef_xyz_dims=eef_dims)
+    if cfg.dataset is not None:
+        spec = cfg.dataset
+        if args.n is not None:  # CLI --n 覆盖 profile
+            spec.n = args.n
+        return spec
+    raise SystemExit("需指定 --synthetic / --lerobot <root>，或在 --config 里配置 dataset:")
+
+
+def _load_episodes(cfg: PipelineConfig, args) -> List[Episode]:
+    spec = _resolve_dataset(cfg, args)
+    loader = build_loader(spec)
+    n = spec.n
+    indices = range(min(n, len(loader))) if n else None
+    return list(loader.iter_episodes(indices))
 
 
 def _apply_llm_overrides(cfg, args):
@@ -64,7 +74,7 @@ def cmd_run(args):
     if args.grounding:
         cfg.stage4.enable_grounding = True
 
-    episodes = _load_episodes(args)
+    episodes = _load_episodes(cfg, args)
     runner = PipelineRunner(cfg)
     out = runner.run(episodes)
 
@@ -101,7 +111,7 @@ def main(argv=None):
     src.add_argument("--gripper-key", default=None, help="gripper 来源列 (如 action)")
     src.add_argument("--gripper-dim", type=int, default=-1, help="gripper 在该列向量中的下标 (如 action[6] -> 6)")
     src.add_argument("--eef-xyz-dims", default=None, help="state 中末端 xyz 维度, 逗号分隔 (如 austin_buds: 20,21,22)")
-    src.add_argument("--n", type=int, default=5, help="处理的轨迹条数")
+    src.add_argument("--n", type=int, default=None, help="处理的轨迹条数 (合成默认5, 真实数据默认全部)")
     src.add_argument("--no-images", action="store_true", help="合成数据不生成图像")
 
     r.add_argument("--config", help="YAML 配置文件")

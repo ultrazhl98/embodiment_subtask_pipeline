@@ -54,8 +54,22 @@ python -m subtask_pipeline.cli run --synthetic --no-anchor --out out.jsonl
 | 4  | `stages/stage4_grounding.py` | GroundingDINO/OWL-ViT + SAM bbox (可选) | `gripper_positions.py` |
 | 5  | `stages/stage5_output.py`    | 质量分级输出 + `stats.py` 统计报告 | — |
 
-数据抽象层 `data/`：`Episode` 把数据集格式与产线解耦；提供 `LeRobotLoader`
-(v2/v2.1 parquet + mp4) 与 `make_synthetic_dataset` (离线测试)。
+数据抽象层 `data/`：`Episode` 把数据集格式与产线解耦，所有 loader 实现统一的
+`DatasetLoader` 接口 (`__len__/load_episode/iter_episodes`)，由 `build_loader(DatasetConfig)`
+按 `type` 分发；新增数据集 = 实现接口 + 注册一行，不改 CLI/pipeline。已提供
+`LeRobotLoader` (v2/v2.1 parquet + mp4) 与 `SyntheticLoader` (离线测试)。
+
+**统一输入契约** (loader 必须产出符合契约的 `Episode`，`Episode.validate()` 会在
+产线入口逐条校验，违约者计入 `failures`)：
+
+| 字段 | 要求 |
+|------|------|
+| `states` | `(N, D)` float，**前 3 维为 EEF xyz**，线性尺度 |
+| `gripper` | `(N,)` float，**归一到 [0,1]，1=张开**；loader 负责转换原始量纲/极性 |
+| `image_fn` | `idx -> (H,W,3) uint8 RGB` 或 `None` |
+
+跨 LeRobot 数据集的 gripper 量纲/极性差异由 `LeRobotLoader` 的
+`gripper_open_is_high / gripper_min / gripper_max` 统一到该契约。
 
 LLM 层 `llm/`：`BaseClient` 统一 JSON 解析 + 校验重试 (参考 ECoT Gemini 封装)；
 `MockClient` 离线确定性桩、`OpenAICompatClient` 实后端。切换由 `LLMConfig.backend` 控制。
@@ -74,6 +88,13 @@ LLM 层 `llm/`：`BaseClient` 统一 JSON 解析 + 校验重试 (参考 ECoT Gem
 
 所有可调参数集中在 `subtask_pipeline/config.py`，默认值取自 doc 的"关键参数"。
 用 `configs/default.yaml` 覆盖，按数据集调整 (如 DROID 设 `stage2.delta_tolerance: 2`)。
+
+**数据集 profile**：一个 YAML 同时描述「数据来源 + 加载约定 + 该数据集 stage 调参」，
+见 `configs/datasets/austin_buds.yaml`。新增数据集 = 加一个 profile，无需改代码：
+
+```bash
+python -m subtask_pipeline.cli run --config configs/datasets/austin_buds.yaml --out out.jsonl
+```
 
 ## 测试
 
