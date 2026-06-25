@@ -1,0 +1,23 @@
+# 数据集 profile 模板: RoboTwin (LeRobot)
+# 所有标 "需确认" 的字段需对照实际 LeRobot meta/info 填写后再使用。
+
+dataset:
+  type: lerobot
+  root: /path/to/robotwin              # 需确认: 实际路径
+  state_key: observation.state
+  eef_xyz_dims: [0, 1, 2]             # 需确认: 末端 xyz 下标 (双臂需确认取哪只手)
+  gripper_key: action                  # 需确认
+  gripper_dim: -1                      # 需确认
+  gripper_open_is_high: true           # 需确认: 极性
+  image_camera: null                   # 需确认: 相机名
+
+stage1b:
+  rdp_epsilon: 0.02                    # 需确认: 按动作尺度调
+  transport_disp_threshold: 0.08
+
+stage2:
+  min_segment_frames: 10
+  max_segment_frames: 400
+
+llm:
+  backend: mock

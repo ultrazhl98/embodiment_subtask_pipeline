@@ -2,16 +2,15 @@
 
 from . import (
     stage0_prefilter,
-    stage1a_anchors,
+    stage05_global,
     stage1b_physical,
     stage1c_text,
     stage2_align,
-    stage3_describe,
     stage4_grounding,
     stage5_output,
 )
 
 __all__ = [
-    "stage0_prefilter", "stage1a_anchors", "stage1b_physical", "stage1c_text",
-    "stage2_align", "stage3_describe", "stage4_grounding", "stage5_output",
+    "stage0_prefilter", "stage05_global", "stage1b_physical", "stage1c_text",
+    "stage2_align", "stage4_grounding", "stage5_output",
 ]

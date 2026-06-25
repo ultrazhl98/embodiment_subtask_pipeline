@@ -1,11 +1,13 @@
 # Subtask 标注产线默认配置
-# 关键参数取自 doc/pipeline_overview.md，按数据集特性调整。
+# 关键参数见 doc/pipeline_improvement_plan.md，按数据集特性调整。
 
 stage0:
   jitter_window: 10
   jitter_max_switches: 2
   min_hold_frames: 5
   gripper_reliable_threshold: 0.7
+  gripper_jitter_weight: 0.6        # quality_score 抖动项权重 (过激进可调小)
+  gripper_invalid_weight: 0.7       # quality_score 无效切换项权重
   length_mad_factor: 3.0
   brightness_threshold: 30.0
   blur_threshold: 100.0
@@ -13,26 +15,29 @@ stage0:
   image_sample_count: 5
   gripper_binarize_threshold: 0.5
 
+stage05:
+  enable: true                      # 全局视频理解 (替代旧首帧锚点)
+  sample_count: 10                  # 均匀采样覆盖全程的帧数
+  max_objects: 4
+
 stage1b:
   binarize_threshold: 0.5
   median_filter_window: 7
   min_segment_frames: 10
-  primitive_move_threshold: 0.03
-  fast_speed_quantile: 0.6
+  lift_threshold: 0.05              # 垂直位移阈值, 区分 pick_up vs grasp
+  transport_disp_threshold: 0.08   # 水平位移阈值, 区分 transport vs hold
+  use_rdp_for_nonprehensile: true  # 非抓持轨迹启用 RDP 拐点分割
+  rdp_epsilon: 0.02                # RDP 简化精度 (按动作尺度调)
+  nonprehensile_open_ratio_threshold: 0.1
+  speed_minima_window: 5
 
-stage2:
-  delta_tolerance: 1          # LIBERO 建议 1, DROID 建议 2
-  fallback_sample_factor: 3
-  fallback_low_conf_threshold: 0.4
-  fallback_mean_conf_threshold: 0.5
-  negotiate_max_primitive_tokens: 20
-
-stage3:
+stage1c:
   keyframes_per_segment: 4
   max_desc_words: 15
-  max_desc_retries: 2
-  dedup_word_overlap: 0.6
-  self_check_max_retries: 2
+
+stage2:
+  min_segment_frames: 10
+  max_segment_frames: 400
 
 stage4:
   enable_grounding: false
@@ -56,8 +61,7 @@ llm:
 
 loss_weights:
   Gold: 1.0
-  Silver: 0.5
-  Bronze: 0.2
+  Bronze: 0.3
+  Flagged: 0.0
 
-enable_anchor_extraction: true
-enable_text_decomposition: true
+enable_text_decomposition: true   # false -> bootstrap: 跳过 VLM 填槽, 用模板生成文本

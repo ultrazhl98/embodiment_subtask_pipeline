@@ -67,7 +67,9 @@ def gripper_quality(signal: np.ndarray, cfg: Stage0Config) -> Dict:
     else:
         invalid_ratio = 0.0
 
-    score = float(np.clip(1.0 - 0.6 * jitter_ratio - 0.7 * invalid_ratio, 0.0, 1.0))
+    score = float(np.clip(
+        1.0 - cfg.gripper_jitter_weight * jitter_ratio - cfg.gripper_invalid_weight * invalid_ratio,
+        0.0, 1.0))
     label = "reliable" if score >= cfg.gripper_reliable_threshold else "noisy"
     return {
         "gripper_quality_score": round(score, 4),

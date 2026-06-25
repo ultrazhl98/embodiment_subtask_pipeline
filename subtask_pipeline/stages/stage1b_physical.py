@@ -1,8 +1,12 @@
-"""Stage 1-B — 物理信号分割。
+"""Stage 1-B — 事件帧提取 + 语义原语分类。
 
-从 proprio (gripper + EEF) 提取候选 segment 边界与 movement primitive。
-movement primitive 提取移植并扩展自 ECoT
-`scripts/generate_embodied_data/primitive_movements.py`。
+从 proprio (gripper + EEF) 切分轨迹并给每段一个**语义原语标签** (而非旧版的
+纯运动学短语)。分割信号:
+- 夹爪事件帧 (open<->close 切换): 抓持类任务的硬边界
+- RDP 拐点 + 速度极小值: 夹爪全程闭合的非抓持任务 (push/wipe/...) 的补充边界
+
+输出 (primitive_label, start_frame, end_frame) 列表 + 事件帧 + per-frame 信息，
+供 Stage 1-C 填槽与 Stage 2 规则校验使用。
 """
 
 from __future__ import annotations
@@ -12,49 +16,11 @@ from typing import Dict, List
 import numpy as np
 
 from ..config import Stage1bConfig
-from ..data.types import Episode
-
-# ---------------------------------------------------------------------------
-# Movement primitive (移植自 ECoT primitive_movements.py)
-# ---------------------------------------------------------------------------
-
-_MOVE_NAMES = [
-    {-1: "backward", 0: None, 1: "forward"},
-    {-1: "right", 0: None, 1: "left"},
-    {-1: "down", 0: None, 1: "up"},
-]
-
-
-def describe_move(move_vec: np.ndarray) -> str:
-    """把 xyz 方向向量 (-1/0/1) 翻译为简短文字 (ECoT describe_move 的精简版)。"""
-    parts = [_MOVE_NAMES[i][int(move_vec[i])] for i in range(3)]
-    parts = [p for p in parts if p is not None]
-    return ("move " + " ".join(parts)) if parts else "stop"
-
-
-def classify_movement(window: np.ndarray, threshold: float = 0.03):
-    """ECoT classify_movement: 取窗口首尾 xyz 位移，阈值化为方向向量。"""
-    diff = window[-1] - window[0]
-    s = np.sum(np.abs(diff[:3]))
-    if s > 3 * threshold:
-        diff[:3] = diff[:3] * (3 * threshold / s)
-    move_vec = 1 * (diff[:3] > threshold) - 1 * (diff[:3] < -threshold)
-    return describe_move(move_vec), move_vec
-
-
-def per_frame_primitives(xyz: np.ndarray, cfg: Stage1bConfig) -> List[str]:
-    """逐帧 movement primitive 文字 (供 Stage 2 协商路径)。"""
-    n = len(xyz)
-    if n < 2:
-        return ["stop"] * n
-    windows = [xyz[i:i + 4] for i in range(n - 1)]
-    prims = [classify_movement(w, cfg.primitive_move_threshold)[0] for w in windows]
-    prims.append(prims[-1])
-    return prims
+from ..data.types import Episode, Segment
 
 
 # ---------------------------------------------------------------------------
-# Gripper 离散化与分段
+# Gripper 离散化
 # ---------------------------------------------------------------------------
 
 
@@ -66,40 +32,123 @@ def _median_filter(signal: np.ndarray, window: int) -> np.ndarray:
     return np.array([np.median(padded[i:i + window]) for i in range(len(signal))])
 
 
-def discretize_gripper(signal: np.ndarray, gripper_label: str, cfg: Stage1bConfig):
-    """reliable 直接二值化; noisy 先中值滤波。返回 (binary, smoothing_seg_delta)。"""
-    raw_bin = (signal > cfg.binarize_threshold).astype(np.int8)
-    raw_segs = 1 + int(np.sum(np.diff(raw_bin) != 0)) if len(raw_bin) > 1 else 1
+def discretize_gripper(signal: np.ndarray, gripper_label: str, cfg: Stage1bConfig) -> np.ndarray:
+    """二值化夹爪信号 (1=open, 0=close)。noisy 轨迹先中值滤波。"""
     if gripper_label == "noisy":
-        smoothed = _median_filter(signal, cfg.median_filter_window)
-        binary = (smoothed > cfg.binarize_threshold).astype(np.int8)
-    else:
-        binary = raw_bin
-    smooth_segs = 1 + int(np.sum(np.diff(binary) != 0)) if len(binary) > 1 else 1
-    return binary, raw_segs - smooth_segs
+        signal = _median_filter(signal, cfg.median_filter_window)
+    return (signal > cfg.binarize_threshold).astype(np.int8)
 
 
-def _segments_from_binary(binary: np.ndarray):
-    """由二值序列得到 [(start, end, state)] 闭区间分段。"""
-    n = len(binary)
-    if n == 0:
+def event_frames_from_binary(binary: np.ndarray) -> List[int]:
+    """夹爪状态切换发生的帧索引 (切换后第一帧) = 抓持事件的硬锚点。"""
+    if len(binary) < 2:
         return []
-    bounds = np.where(np.diff(binary) != 0)[0] + 1
-    starts = np.concatenate([[0], bounds])
-    ends = np.concatenate([bounds - 1, [n - 1]])
-    return [(int(s), int(e), "open" if binary[s] == 1 else "close")
-            for s, e in zip(starts, ends)]
+    return (np.where(np.diff(binary) != 0)[0] + 1).astype(int).tolist()
 
 
-def _merge_short_segments(segments, min_len: int):
-    """把长度 < min_len 的段并入较短的相邻段，保持覆盖连续。"""
+# ---------------------------------------------------------------------------
+# RDP 拐点检测 (自包含实现, 不引入 rdp 依赖)
+# ---------------------------------------------------------------------------
+
+
+def _rdp_keep_mask(points: np.ndarray, epsilon: float) -> np.ndarray:
+    """Ramer-Douglas-Peucker: 返回保留点的布尔掩码 (端点恒保留)。"""
+    n = len(points)
+    mask = np.zeros(n, dtype=bool)
+    if n == 0:
+        return mask
+    mask[0] = mask[-1] = True
+    stack = [(0, n - 1)]
+    while stack:
+        s, e = stack.pop()
+        if e <= s + 1:
+            continue
+        start, end = points[s], points[e]
+        line = end - start
+        line_len = float(np.linalg.norm(line))
+        seg = points[s + 1:e] - start
+        if line_len < 1e-12:
+            dists = np.linalg.norm(seg, axis=1)
+        else:
+            dists = np.linalg.norm(np.cross(seg, line), axis=1) / line_len
+        k = int(np.argmax(dists))
+        if dists[k] > epsilon:
+            keep = s + 1 + k
+            mask[keep] = True
+            stack.append((s, keep))
+            stack.append((keep, e))
+    return mask
+
+
+def rdp_boundaries(xyz: np.ndarray, epsilon: float) -> List[int]:
+    """RDP 保留的内部拐点索引 (运动方向突变点), 作为候选分割边界。"""
+    if len(xyz) < 3:
+        return []
+    mask = _rdp_keep_mask(xyz, epsilon)
+    mask[0] = mask[-1] = False  # 端点不作内部边界
+    return sorted(np.where(mask)[0].tolist())
+
+
+def _local_minima(speed: np.ndarray, window: int) -> List[int]:
+    """速度局部极小值 (valley) -> EEF 在相位切换处减速的帧 (返回对应帧边界索引)。
+
+    用 valley 判据 (严格下降后非上升) 避免在匀速平台上产生大量伪边界。
+    """
+    n = len(speed)
+    out = []
+    for i in range(1, n - 1):
+        if speed[i] < speed[i - 1] and speed[i] <= speed[i + 1]:
+            lo, hi = max(0, i - window), min(n, i + window + 1)
+            if speed[i] <= speed[lo:hi].min() + 1e-12:
+                out.append(i + 1)  # speed[i] 跨 frame i->i+1, 边界落在 i+1
+    return out
+
+
+def _enforce_min_gap(bounds: List[int], min_gap: int, n: int) -> List[int]:
+    """过滤掉过近 (<min_gap) 或越界的边界。"""
+    out: List[int] = []
+    for b in sorted(set(bounds)):
+        if b <= 0 or b >= n - 1:
+            continue
+        if out and b - out[-1] < min_gap:
+            continue
+        out.append(int(b))
+    return out
+
+
+def detect_nonprehensile_boundaries(xyz: np.ndarray, binary: np.ndarray,
+                                    cfg: Stage1bConfig) -> List[int]:
+    """对夹爪几乎全程闭合的非抓持轨迹, 用 RDP + 速度突变补充分割边界。"""
+    if not cfg.use_rdp_for_nonprehensile or len(xyz) < 3:
+        return []
+    open_ratio = float(binary.mean()) if len(binary) else 1.0  # 1=open
+    if open_ratio > cfg.nonprehensile_open_ratio_threshold:
+        return []  # 含足够 open 帧 -> 抓持任务, 由夹爪事件分割即可
+    bounds = set(rdp_boundaries(xyz, cfg.rdp_epsilon))
+    speed = np.linalg.norm(np.diff(xyz, axis=0), axis=1)
+    bounds |= set(_local_minima(speed, cfg.speed_minima_window))
+    return _enforce_min_gap(sorted(bounds), cfg.min_segment_frames, len(xyz))
+
+
+# ---------------------------------------------------------------------------
+# 切分与短段合并
+# ---------------------------------------------------------------------------
+
+
+def _intervals_from_cuts(cuts: List[int], n: int):
+    """由内部切点得到 [(start, end)] 闭区间, 覆盖 0..n-1。"""
+    pts = [0] + [c for c in sorted(set(cuts)) if 0 < c < n] + [n]
+    return [(pts[i], pts[i + 1] - 1) for i in range(len(pts) - 1)]
+
+
+def _merge_short_segments(segments, binary, min_len: int):
+    """长度 < min_len 的段并入较短相邻段, 保持覆盖连续。返回 [(s, e)]。"""
     segs = [list(s) for s in segments]
     changed = True
     while changed and len(segs) > 1:
         changed = False
-        for i, (s, e, _state) in enumerate(segs):
+        for i, (s, e) in enumerate(segs):
             if e - s + 1 < min_len:
-                # 选并入左还是右 (取相邻较短段方向，倾向并入左)
                 if i == 0:
                     j = 1
                 elif i == len(segs) - 1:
@@ -109,33 +158,29 @@ def _merge_short_segments(segments, min_len: int):
                     right_len = segs[i + 1][1] - segs[i + 1][0]
                     j = i - 1 if left_len <= right_len else i + 1
                 lo, hi = min(i, j), max(i, j)
-                merged = [min(segs[lo][0], segs[hi][0]),
-                          max(segs[lo][1], segs[hi][1]),
-                          segs[lo][2]]  # 沿用靠前段的 gripper_state
-                segs = segs[:lo] + [merged] + segs[hi + 1:]
+                segs = segs[:lo] + [[segs[lo][0], segs[hi][1]]] + segs[hi + 1:]
                 changed = True
                 break
-    return [tuple(s) for s in segs]
+    return [(int(s), int(e)) for s, e in segs]
 
 
 # ---------------------------------------------------------------------------
-# Segment movement primitive (段级，≤6 词)
+# 语义原语推断
 # ---------------------------------------------------------------------------
 
 
-def _segment_primitive(xyz_seg: np.ndarray, cfg: Stage1bConfig, fast_speed: float) -> str:
-    """段级主运动方向 + 速度修饰 (reach/place)，控制在 6 词内。"""
-    if len(xyz_seg) < 2:
-        return "hold position"
-    disp = xyz_seg[-1] - xyz_seg[0]
-    move_vec = 1 * (disp > cfg.primitive_move_threshold) - 1 * (disp < -cfg.primitive_move_threshold)
-    dirs = [_MOVE_NAMES[i][int(move_vec[i])] for i in range(3)]
-    dirs = [d for d in dirs if d is not None][:2]  # 最多两个方向词
-    speed = float(np.linalg.norm(np.diff(xyz_seg[:, :3], axis=0), axis=1).mean())
-    verb = "reach" if speed >= fast_speed else "move slowly"
-    if not dirs:
-        return "hold and grip"
-    return f"{verb} " + " ".join(dirs)
+def infer_semantic_primitive(gripper_state: str, is_close_event: bool, is_open_event: bool,
+                             disp_norm: float, disp_vertical: float, cfg: Stage1bConfig) -> str:
+    """由夹爪状态/事件 + 段内位移推断语义原语标签。"""
+    if is_close_event:
+        return "pick_up" if disp_vertical > cfg.lift_threshold else "grasp"
+    if is_open_event:
+        return "place"
+    if gripper_state == "close":
+        return "transport" if disp_norm > cfg.transport_disp_threshold else "hold"
+    if gripper_state == "open":
+        return "reach"
+    return "unknown"
 
 
 # ---------------------------------------------------------------------------
@@ -146,34 +191,57 @@ def _segment_primitive(xyz_seg: np.ndarray, cfg: Stage1bConfig, fast_speed: floa
 def run_stage1b(episode: Episode, cfg: Stage1bConfig) -> Dict:
     signal = episode.gripper_signal()
     xyz = episode.eef_xyz()
+    n = episode.num_frames
     gripper_label = episode.meta.get("gripper_label", "reliable")
 
-    binary, smooth_delta = discretize_gripper(signal, gripper_label, cfg)
-    raw_segments = _segments_from_binary(binary)
-    segments = _merge_short_segments(raw_segments, cfg.min_segment_frames)
+    binary = discretize_gripper(signal, gripper_label, cfg)
+    event_frames = event_frames_from_binary(binary)
+    nonpre_bounds = detect_nonprehensile_boundaries(xyz, binary, cfg)
 
-    # 边界对齐: 首段从 0 开始，末段到最后一帧
-    if segments:
-        segments[0] = (0, segments[0][1], segments[0][2])
-        segments[-1] = (segments[-1][0], episode.num_frames - 1, segments[-1][2])
+    cuts = sorted(set(event_frames) | set(nonpre_bounds))
+    intervals = _intervals_from_cuts(cuts, n)
+    intervals = _merge_short_segments(intervals, binary, cfg.min_segment_frames)
 
-    # 速度阈值用于 reach/place 区分
-    frame_speed = np.linalg.norm(np.diff(xyz, axis=0), axis=1) if len(xyz) > 1 else np.array([0.0])
-    fast_speed = float(np.quantile(frame_speed, cfg.fast_speed_quantile)) if len(frame_speed) else 0.0
+    event_set = set(event_frames)
+    segments: List[Segment] = []
+    primitives: List[str] = []
+    primitive_by_frame: Dict[int, str] = {}
+    boundary_sources: List[str] = []
 
-    seg_dicts = []
-    primitives = []
-    for s, e, state in segments:
-        prim = _segment_primitive(xyz[s:e + 1], cfg, fast_speed)
-        seg_dicts.append({"start_frame": s, "end_frame": e, "gripper_state": state})
+    for s, e in intervals:
+        state = "open" if binary[s] == 1 else "close"
+        is_close_event = s > 0 and binary[s] == 0 and binary[s - 1] == 1
+        is_open_event = s > 0 and binary[s] == 1 and binary[s - 1] == 0
+        seg_xyz = xyz[s:e + 1]
+        disp = seg_xyz[-1] - seg_xyz[0] if len(seg_xyz) > 1 else np.zeros(3)
+        disp_norm = float(np.linalg.norm(disp))
+        disp_vertical = float(disp[2])
+        prim = infer_semantic_primitive(state, is_close_event, is_open_event,
+                                        disp_norm, disp_vertical, cfg)
+        # start 边界来源: 起始帧 / 夹爪事件帧 -> "event" (硬锚点)，否则 RDP 补的边界
+        source = "event" if (s == 0 or s in event_set) else "rdp"
+        seg = Segment(subtask_text=prim, start_frame=s, end_frame=e,
+                      keyframe=(s + e) // 2, gripper_state=state,
+                      primitive_label=prim, boundary_source=source)
+        segments.append(seg)
         primitives.append(prim)
+        primitive_by_frame[s] = prim
+        boundary_sources.append(source)
 
     result = {
+        "segments": segments,
         "N_physical": len(segments),
-        "segments": seg_dicts,
         "primitives": primitives,
-        "frame_primitives": per_frame_primitives(xyz, cfg),
-        "gripper_smoothing_seg_delta": int(smooth_delta),
+        "event_frames": event_frames,
+        "gripper_binary": binary,
+        "primitive_by_frame": primitive_by_frame,
+        "has_nonprehensile_fill": any(src == "rdp" for src in boundary_sources),
     }
-    episode.meta["stage1b"] = {k: result[k] for k in ("N_physical", "segments", "primitives")}
+    episode.meta["stage1b"] = {
+        "N_physical": len(segments),
+        "primitives": primitives,
+        "event_frames": event_frames,
+        "segments": [{"start_frame": s.start_frame, "end_frame": s.end_frame,
+                      "primitive_label": s.primitive_label} for s in segments],
+    }
     return result

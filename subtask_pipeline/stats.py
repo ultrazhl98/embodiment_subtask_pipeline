@@ -25,15 +25,16 @@ def _dist(values: List[float]) -> Dict:
 def build_report(records: List[Dict], failures: List[Dict], length_stats: Dict) -> Dict:
     n = len(records)
     conf_counter = Counter(r["confidence"] for r in records)
-    branch_counter = Counter(r["branch"] for r in records)
 
     n_subtasks = [len(r["segments"]) for r in records]
     seg_lengths = [s["end_frame"] - s["start_frame"] + 1 for r in records for s in r["segments"]]
     gripper_scores = [r["gripper_quality_score"] for r in records
                       if r.get("gripper_quality_score") is not None]
-    retries = [r["annotation_meta"].get("self_check_retries", 0) or 0 for r in records]
-    self_check_fail = sum(1 for r in records if r["annotation_meta"].get("self_check_passed") is False)
-    desc_failed = sum(1 for r in records if r["annotation_meta"].get("description_gen_failed"))
+    flagged = sum(1 for r in records if r["confidence"] == "Flagged")
+    rule_failures = sum(len(r["annotation_meta"].get("stage2", {}).get("rule_failures", []))
+                        for r in records)
+    desc_failed = sum(1 for r in records
+                      if r["annotation_meta"].get("stage1c", {}).get("description_gen_failed"))
 
     def ratio(c: Counter) -> Dict:
         return {k: {"count": v, "ratio": round(v / n, 3) if n else 0.0} for k, v in c.items()}
@@ -42,12 +43,11 @@ def build_report(records: List[Dict], failures: List[Dict], length_stats: Dict) 
         "total_records": n,
         "total_failures": len(failures),
         "confidence_distribution": ratio(conf_counter),
-        "branch_hit_rate": ratio(branch_counter),
         "subtask_count_distribution": _dist(n_subtasks),
         "segment_length_distribution": _dist(seg_lengths),
         "gripper_quality_distribution": _dist(gripper_scores),
-        "self_check_retry_rate": round(sum(1 for r in retries if r > 0) / n, 3) if n else 0.0,
-        "self_check_fail_count": self_check_fail,
+        "flagged_count": flagged,
+        "rule_failure_count": rule_failures,
         "description_gen_failed_count": desc_failed,
         "n_task_groups": len(length_stats),
     }

@@ -1,0 +1,25 @@
+# 数据集 profile: BridgeData V2 (LeRobot)
+# 用法: python -m subtask_pipeline.cli run --config configs/datasets/bridge_v2.yaml
+
+dataset:
+  type: lerobot
+  root: /path/to/bridge_v2             # 改成实际路径
+  state_key: observation.state
+  eef_xyz_dims: [0, 1, 2]             # 需按实际 state 格式确认
+  gripper_key: action
+  gripper_dim: 6                       # 需确认
+  gripper_open_is_high: true           # 需确认极性
+  gripper_min: 0.0
+  gripper_max: 1.0
+  image_camera: exterior_image_1_left  # 需确认相机名
+
+stage1b:
+  rdp_epsilon: 0.015                   # 按 BridgeData 动作尺度调
+  transport_disp_threshold: 0.06
+
+stage2:
+  min_segment_frames: 8
+  max_segment_frames: 350
+
+llm:
+  backend: mock                        # 接 vLLM 时改为 vllm 并配 host

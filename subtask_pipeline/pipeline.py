@@ -1,9 +1,14 @@
 """端到端编排器。
 
-把 Stage 0 ~ Stage 5 串成一条产线。支持:
-- 主链路 bootstrap: 关闭锚点/文本分解时走纯物理分割 (Stage0->1B->2 fast->3->5)
-- 完整链路: 三路提取 + 一致性路由 + 描述生成 + (可选) grounding
-逐条轨迹容错: 单条失败不影响其余，错误收集到 failures。
+把 Stage 0 ~ Stage 5 串成一条产线:
+    Stage 0    轨迹预过滤
+    Stage 0.5  全局视频理解 (写 episode.meta["global_summary"])
+    Stage 1-B  事件帧提取 + 语义原语分割 (驱动分割边界)
+    Stage 1-C  per-segment 描述填槽
+    Stage 2    规则质量过滤 (Gold / Bronze / Flagged)
+    Stage 4    grounding (可选)
+    Stage 5    质量分级输出 (+ progress)
+逐条轨迹容错: 单条失败不影响其余, 错误收集到 failures。
 """
 
 from __future__ import annotations
@@ -12,16 +17,15 @@ import logging
 from typing import Dict, List, Optional, Sequence
 
 from .config import PipelineConfig
-from .data.types import AnchorObject, Episode
+from .data.types import Episode
 from .llm import build_client
 from .llm.base import BaseClient
 from .stages import (
     stage0_prefilter as s0,
-    stage1a_anchors as s1a,
+    stage05_global as s05,
     stage1b_physical as s1b,
     stage1c_text as s1c,
     stage2_align as s2,
-    stage3_describe as s3,
     stage4_grounding as s4,
     stage5_output as s5,
 )
@@ -65,7 +69,7 @@ class PipelineRunner:
         for ep in episodes:
             ep.meta["length_flag"] = s0.length_flag(ep.num_frames, ep.task_instruction, length_stats)
 
-        # Pass 2: Stage 1~5 逐条
+        # Pass 2: Stage 0.5 ~ 5 逐条
         records = []
         for ep in episodes:
             try:
@@ -80,36 +84,25 @@ class PipelineRunner:
 
     # ----------------------------------------------------------------------
     def _run_episode(self, ep: Episode) -> Dict:
-        # Stage 1-B 物理分割 (主链路核心)
+        # Stage 0.5 全局视频理解
+        summary = s05.run_stage05(ep, self.client, self.cfg.stage05)
+
+        # Stage 1-B 物理分割 (驱动分割边界 + 语义原语)
         stage1b = s1b.run_stage1b(ep, self.cfg.stage1b)
 
-        # Stage 1-A 锚点
-        if self.cfg.enable_anchor_extraction:
-            anchors = s1a.run_stage1a(ep, self.client, self.cfg.stage0.blur_threshold)
-        else:
-            anchors = []
+        # Stage 1-C per-segment 描述填槽
+        s1c.run_stage1c(ep, stage1b["segments"], self.client, self.cfg.stage1c,
+                        self.cfg.allowed_verbs, enable_vlm=self.cfg.enable_text_decomposition)
 
-        # Stage 1-C 文本分解 (无锚点时退化为物理 primitive 作 subtask_texts)
-        if self.cfg.enable_text_decomposition and anchors:
-            subtask_texts = s1c.run_stage1c(ep, anchors, self.client, self.cfg.allowed_verbs)
-        else:
-            subtask_texts = list(stage1b["primitives"])
+        # Stage 2 规则质量过滤
+        stage2 = s2.run_stage2(ep, stage1b, self.cfg.stage2)
 
-        # Stage 2 对齐
-        stage2 = s2.run_stage2(ep, subtask_texts, stage1b, self.client, self.cfg.stage2)
-
-        # Stage 3 描述生成 + 自检
-        stage3 = s3.run_stage3(ep, stage2["segments"], anchors, subtask_texts,
-                               self.client, self.cfg.stage3, self.cfg.allowed_verbs)
-
-        # Stage 4 grounding (可选)
-        segments = s4.run_stage4(ep, stage3["segments"], anchors, self.cfg.stage4, self._grounder)
+        # Stage 4 grounding (可选, 使用 global_summary 的物体列表)
+        scene_objects = summary.get("objects", []) if summary else []
+        segments = s4.run_stage4(ep, stage2["segments"], scene_objects, self.cfg.stage4, self._grounder)
 
         # Stage 5 输出装配
-        record = s5.assemble_record(
-            ep, anchors, segments, stage2["confidence"], stage2["branch"],
-            stage3, self.cfg.loss_weights)
-        return record
+        return s5.assemble_record(ep, segments, stage2["confidence"], self.cfg.loss_weights)
 
 
 def run_pipeline(episodes: Sequence[Episode], config: Optional[PipelineConfig] = None) -> Dict:

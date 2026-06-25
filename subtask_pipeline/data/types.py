@@ -12,19 +12,8 @@ from typing import Any, Callable, Dict, List, Optional
 import numpy as np
 
 # ---------------------------------------------------------------------------
-# 锚点 / 分段
+# 分段
 # ---------------------------------------------------------------------------
-
-
-@dataclass
-class AnchorObject:
-    """Stage 1-A 产出的语义锚点物体。"""
-
-    role: str  # "source" | "target"
-    description: str
-
-    def to_dict(self) -> Dict[str, str]:
-        return {"role": self.role, "description": self.description}
 
 
 @dataclass
@@ -37,6 +26,9 @@ class Segment:
     keyframe: Optional[int] = None
     completion_frame: Optional[int] = None
     gripper_state: Optional[str] = None  # Stage 1-B 物理分段时的 "open"/"close"
+    primitive_label: Optional[str] = None  # Stage 1-B 语义原语标签
+    boundary_source: Optional[str] = None  # 起始边界来源: "event" | "rdp"
+    progress: Optional[List[float]] = None  # Stage 5 段内进度信号 0->1
     grounding: Optional[Any] = None  # Stage 4 产出
 
     def to_dict(self) -> Dict[str, Any]:
@@ -45,10 +37,14 @@ class Segment:
             "start_frame": int(self.start_frame),
             "end_frame": int(self.end_frame),
         }
+        if self.primitive_label is not None:
+            d["primitive_label"] = self.primitive_label
         if self.keyframe is not None:
             d["keyframe"] = int(self.keyframe)
         if self.completion_frame is not None:
             d["completion_frame"] = int(self.completion_frame)
+        if self.progress is not None:
+            d["progress"] = self.progress
         d["grounding"] = self.grounding
         return d
 

@@ -1,7 +1,10 @@
 """产线配置。
 
-所有 Stage 的可调参数集中在此，按 doc/pipeline_overview.md 的"关键参数"小节给默认值。
-支持从 YAML 加载并覆盖默认值。
+所有 Stage 的可调参数集中在此。支持从 YAML 加载并覆盖默认值。
+
+动词/原语体系的 single source of truth 也在此声明 (PHYSICAL_PRIMITIVES /
+ALLOWED_VERBS / PRIMITIVE_TO_VERB / PRIMITIVE_TEMPLATES)，其余模块一律动态引用，
+不允许硬编码 (见 doc/pipeline_improvement_plan.md 第五节)。
 """
 
 from __future__ import annotations
@@ -18,6 +21,8 @@ class Stage0Config:
     jitter_max_switches: int = 2       # 窗口内超过该切换次数判为抖动
     min_hold_frames: int = 5           # 无效切换最小持续帧
     gripper_reliable_threshold: float = 0.7
+    gripper_jitter_weight: float = 0.6   # quality_score 中抖动项权重 (可按数据集调)
+    gripper_invalid_weight: float = 0.7  # quality_score 中无效切换项权重
     length_mad_factor: float = 3.0     # 长度异常 MAD 倍数
     brightness_threshold: float = 30.0  # 灰度均值过暗阈值
     blur_threshold: float = 100.0      # 拉普拉斯方差模糊阈值
@@ -28,38 +33,43 @@ class Stage0Config:
 
 
 @dataclass
+class Stage05Config:
+    """Stage 0.5 全局视频理解 (替代旧 Stage 1-A 首帧锚点)。"""
+
+    enable: bool = True                # 关闭则退化为无全局理解模式
+    sample_count: int = 10             # 全局理解均匀采样帧数 (覆盖全程)
+    max_objects: int = 4               # 最多识别物体数
+
+
+@dataclass
 class Stage1bConfig:
-    """Stage 1-B 物理信号分割。"""
+    """Stage 1-B 事件帧提取 + 语义原语分类。"""
 
     binarize_threshold: float = 0.5
     median_filter_window: int = 7      # noisy 轨迹中值滤波窗口
     min_segment_frames: int = 10       # 过短 segment 合并阈值
-    primitive_move_threshold: float = 0.03  # 主运动方向阈值 (沿用 ECoT classify_movement)
-    fast_speed_quantile: float = 0.6   # 区分 reach(快)/place(慢) 的速度分位
+    lift_threshold: float = 0.05       # 垂直位移阈值, 区分 pick_up vs grasp
+    transport_disp_threshold: float = 0.08  # 水平位移阈值, 区分 transport vs hold
+    use_rdp_for_nonprehensile: bool = True  # 非抓持轨迹启用 RDP 拐点分割
+    rdp_epsilon: float = 0.02          # RDP 简化精度 (按动作尺度调)
+    nonprehensile_open_ratio_threshold: float = 0.1  # 判为非抓持轨迹的 open 帧占比上限
+    speed_minima_window: int = 5       # 速度极小值检测窗口
+
+
+@dataclass
+class Stage1cConfig:
+    """Stage 1-C Per-segment 描述生成 (模板 + VLM 填槽, 并入原 Stage 3 职责)。"""
+
+    keyframes_per_segment: int = 4     # 每段送入 VLM 的关键帧数 (首+末+2中间)
+    max_desc_words: int = 15
 
 
 @dataclass
 class Stage2Config:
-    """Stage 2 一致性校验与对齐。"""
+    """Stage 2 规则质量过滤 (从"对齐"退化为"过滤")。"""
 
-    delta_tolerance: int = 1           # |N_physical - N_text| 容忍阈值 (LIBERO=1, DROID=2)
-    fallback_sample_factor: int = 3    # 降级路径采样 N_text * factor 帧
-    fallback_low_conf_threshold: float = 0.4
-    fallback_mean_conf_threshold: float = 0.5
-    negotiate_max_primitive_tokens: int = 20
-
-
-@dataclass
-class Stage3Config:
-    """Stage 3 描述生成 + 自检。"""
-
-    keyframes_per_segment: int = 4     # 每段送入 VLM 的关键帧数 (首+末+2中间)
-    max_desc_words: int = 15
-    max_desc_retries: int = 2
-    dedup_word_overlap: float = 0.6    # 相邻 subtask 词汇重叠率阈值
-    dedup_use_embedding: bool = False
-    dedup_embedding_threshold: float = 0.85
-    self_check_max_retries: int = 2
+    min_segment_frames: int = 10
+    max_segment_frames: int = 400
 
 
 @dataclass
@@ -116,14 +126,81 @@ class LLMConfig:
     request_timeout: float = 60.0
 
 
-# 置信度 -> loss_weight 映射 (Stage 5)
-DEFAULT_LOSS_WEIGHTS = {"Gold": 1.0, "Silver": 0.5, "Bronze": 0.2}
+# ---------------------------------------------------------------------------
+# 动词 / 原语体系 (single source of truth)
+# ---------------------------------------------------------------------------
 
-# Stage 1-C / Stage 3 允许的动词词汇表
-ALLOWED_VERBS = [
-    "reach", "grasp", "lift", "move", "lower", "place",
-    "release", "push", "pull", "open", "close", "rotate",
+# 物理信号层 (Stage 1-B 内部使用的封闭原语集)
+PHYSICAL_PRIMITIVES: List[str] = [
+    "reach", "retract", "pick_up", "grasp", "transport", "place",
+    "push", "pull", "press", "wipe",
+    "open", "close", "rotate", "insert", "pour",
+    "hold", "unknown",
 ]
+
+# 语义标注层 (Stage 1-C 描述生成的动词约束，与标注指南对齐)
+ALLOWED_VERBS: List[str] = [
+    "reach", "retract", "move to",
+    "pick up", "place", "transport", "hand over",
+    "push", "pull", "press", "wipe",
+    "open", "close", "rotate", "insert", "pour",
+]
+
+# primitive -> 自然语言动词 (Stage 2 sanity check 与 Stage 1-C bootstrap 文本)
+PRIMITIVE_TO_VERB: Dict[str, str] = {
+    "reach": "reach",
+    "retract": "retract",
+    "pick_up": "pick up",
+    "grasp": "pick up",
+    "transport": "transport",
+    "place": "place",
+    "push": "push",
+    "pull": "pull",
+    "press": "press",
+    "wipe": "wipe",
+    "open": "open",
+    "close": "close",
+    "rotate": "rotate",
+    "insert": "insert",
+    "pour": "pour",
+    "hold": "transport",
+}
+
+# primitive -> 描述模板 (Stage 1-C 填槽, 替代旧的开放生成)
+PRIMITIVE_TEMPLATES: Dict[str, str] = {
+    "reach": "reach for the {object}",
+    "retract": "retract the arm from {object}",
+    "pick_up": "pick up the {object}",
+    "grasp": "pick up the {object}",
+    "transport": "transport the {object} to {target}",
+    "place": "place the {object} {prep} {target}",
+    "push": "push the {object} {direction}",
+    "pull": "pull the {object} toward {direction}",
+    "press": "press the {object}",
+    "wipe": "wipe the {target} with the {object}",
+    "open": "open the {object}",
+    "close": "close the {object}",
+    "rotate": "rotate the {object}",
+    "insert": "insert the {object} into {target}",
+    "pour": "pour {object} into {target}",
+    "hold": "transport the {object} to {target}",
+}
+
+# 需要 target 槽位的原语 (Stage 1-C 校验: target 必须非空)
+PRIMITIVES_REQUIRING_TARGET = {"transport", "place", "insert", "pour", "wipe", "hold"}
+
+# 置信度 -> loss_weight 映射 (Stage 5)
+DEFAULT_LOSS_WEIGHTS = {"Gold": 1.0, "Bronze": 0.3, "Flagged": 0.0}
+
+
+def starts_with_allowed_verb(text: str, verbs) -> bool:
+    """支持多词动词 (pick up / move to / hand over) 的前缀匹配。"""
+    vset = {v.lower() for v in verbs}
+    words = text.strip().lower().split()
+    for n in (2, 1):  # 优先匹配两词动词
+        if " ".join(words[:n]) in vset:
+            return True
+    return False
 
 
 @dataclass
@@ -131,9 +208,10 @@ class PipelineConfig:
     """顶层配置。"""
 
     stage0: Stage0Config = field(default_factory=Stage0Config)
+    stage05: Stage05Config = field(default_factory=Stage05Config)
     stage1b: Stage1bConfig = field(default_factory=Stage1bConfig)
+    stage1c: Stage1cConfig = field(default_factory=Stage1cConfig)
     stage2: Stage2Config = field(default_factory=Stage2Config)
-    stage3: Stage3Config = field(default_factory=Stage3Config)
     stage4: Stage4Config = field(default_factory=Stage4Config)
     llm: LLMConfig = field(default_factory=LLMConfig)
     dataset: Optional[DatasetConfig] = None  # 数据集 profile (CLI 快捷方式也会填充它)
@@ -141,8 +219,8 @@ class PipelineConfig:
     loss_weights: Dict[str, float] = field(default_factory=lambda: dict(DEFAULT_LOSS_WEIGHTS))
     allowed_verbs: List[str] = field(default_factory=lambda: list(ALLOWED_VERBS))
 
-    # 主链路开关：关闭锚点注入时跳过 Stage 1-A / 1-C，走纯物理分割 (用于先跑通主链路)
-    enable_anchor_extraction: bool = True
+    # 主链路开关：关闭文本描述时跳过 Stage 1-C 的 VLM 填槽，
+    # 直接用 primitive 对应的模板/动词作 subtask_text (用于无 VLM 离线跑通主链路)。
     enable_text_decomposition: bool = True
 
     # ----------------------------------------------------------------------
@@ -150,17 +228,16 @@ class PipelineConfig:
     def from_dict(cls, d: Dict[str, Any]) -> "PipelineConfig":
         d = dict(d or {})
         sub_map = {
-            "stage0": Stage0Config, "stage1b": Stage1bConfig, "stage2": Stage2Config,
-            "stage3": Stage3Config, "stage4": Stage4Config, "llm": LLMConfig,
-            "dataset": DatasetConfig,
+            "stage0": Stage0Config, "stage05": Stage05Config, "stage1b": Stage1bConfig,
+            "stage1c": Stage1cConfig, "stage2": Stage2Config, "stage4": Stage4Config,
+            "llm": LLMConfig, "dataset": DatasetConfig,
         }
         kwargs: Dict[str, Any] = {}
         for key, sub_cls in sub_map.items():
             if key in d and d[key] is not None:
                 valid = {f.name for f in fields(sub_cls)}
                 kwargs[key] = sub_cls(**{k: v for k, v in d[key].items() if k in valid})
-        for scalar in ("loss_weights", "allowed_verbs",
-                       "enable_anchor_extraction", "enable_text_decomposition"):
+        for scalar in ("loss_weights", "allowed_verbs", "enable_text_decomposition"):
             if scalar in d and d[scalar] is not None:
                 kwargs[scalar] = d[scalar]
         return cls(**kwargs)

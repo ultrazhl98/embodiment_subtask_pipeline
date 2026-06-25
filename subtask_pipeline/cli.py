@@ -68,8 +68,8 @@ def cmd_run(args):
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
     cfg = PipelineConfig.from_yaml(args.config) if args.config else PipelineConfig()
     _apply_llm_overrides(cfg, args)
-    if args.no_anchor:
-        cfg.enable_anchor_extraction = False
+    if args.bootstrap:
+        cfg.stage05.enable = False
         cfg.enable_text_decomposition = False
     if args.grounding:
         cfg.stage4.enable_grounding = True
@@ -121,7 +121,8 @@ def main(argv=None):
     llm.add_argument("--vllm-port", type=int, default=None, help="vLLM 端口 (默认 8000)")
     llm.add_argument("--vllm-model", default=None, help="served model 名 (默认自动发现)")
     llm.add_argument("--base-url", default=None, help="直接指定 OpenAI 兼容 base_url (覆盖 host/port)")
-    r.add_argument("--no-anchor", action="store_true", help="主链路 bootstrap: 跳过锚点/文本分解")
+    r.add_argument("--bootstrap", action="store_true",
+                   help="主链路 bootstrap: 跳过全局理解与 VLM 填槽, 用 primitive 模板生成文本")
     r.add_argument("--grounding", action="store_true", help="开启 Stage 4 grounding")
     r.add_argument("--out", help="输出 jsonl 路径")
     r.add_argument("--report", help="统计报告 json 路径")

@@ -15,7 +15,7 @@ from typing import Dict, List, Optional, Sequence
 import numpy as np
 
 from ..config import Stage4Config
-from ..data.types import AnchorObject, Episode, Segment
+from ..data.types import Episode, Segment
 
 
 def _iou(b1, b2) -> float:
@@ -78,7 +78,7 @@ class Grounder:
         return [int(xs.min()), int(ys.min()), int(xs.max() - xs.min()), int(ys.max() - ys.min())]
 
 
-def run_stage4(episode: Episode, segments: List[Segment], anchors: Sequence[AnchorObject],
+def run_stage4(episode: Episode, segments: List[Segment], scene_objects: Sequence[dict],
                cfg: Stage4Config, grounder: Optional[Grounder] = None) -> List[Segment]:
     if not cfg.enable_grounding or not episode.has_images:
         for seg in segments:
@@ -88,17 +88,17 @@ def run_stage4(episode: Episode, segments: List[Segment], anchors: Sequence[Anch
     if grounder is None:
         grounder = Grounder(cfg)
 
-    # 为每个 anchor 分配稳定 object_id
-    object_ids = [f"{a.role}_{i}" for i, a in enumerate(anchors)]
+    # 为每个 global_summary 物体分配稳定 object_id
+    object_ids = [f"{o.get('role', 'object')}_{i}" for i, o in enumerate(scene_objects)]
     prev_boxes: Dict[str, list] = {}
 
     for seg in segments:
         frame_idx = seg.keyframe if seg.keyframe is not None else (seg.start_frame + seg.end_frame) // 2
         img = episode.image(frame_idx)
         objects = []
-        for oid, anchor in zip(object_ids, anchors):
+        for oid, obj in zip(object_ids, scene_objects):
             try:
-                det = grounder.detect(img, anchor.description)
+                det = grounder.detect(img, obj.get("description", ""))
             except Exception:
                 det = None
             if det is None:

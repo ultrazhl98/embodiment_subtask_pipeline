@@ -14,8 +14,13 @@ dataset:
   image_camera: null                  # null=自动探测
 
 # 该数据集的 stage 调参覆盖 (其余沿用 config.py 默认)
+stage1b:
+  rdp_epsilon: 0.02                   # 按 austin_buds 动作尺度调
+  transport_disp_threshold: 0.08
+
 stage2:
-  delta_tolerance: 1
+  min_segment_frames: 10
+  max_segment_frames: 400
 
 llm:
   backend: mock                       # 接 vLLM 时改为 vllm 并配 host
